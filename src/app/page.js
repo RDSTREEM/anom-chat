@@ -11,6 +11,7 @@ export default function ChatRoom({ params }) {
 	const [message, setMessage] = useState('');
 	const [messages, setMessages] = useState([]);
 	const [isSending, setIsSending] = useState(false);
+	const [deletingId, setDeletingId] = useState(null);
 
 	// Load saved username from localStorage
 	useEffect(() => {
@@ -101,9 +102,32 @@ export default function ChatRoom({ params }) {
 			<h2 className="text-xl font-bold mb-2">Room: {room}</h2>
 			<div className="h-64 overflow-y-auto border p-2 mb-2 w-full max-w-lg">
 				{messages.map((msg, index) => (
-					<p key={index} className="text-sm">
-						<strong>{msg.username}:</strong> {msg.message}
-					</p>
+					<div key={index} className="flex items-center text-sm group">
+						<p className="flex-1">
+							<strong>{msg.username}:</strong> {msg.message}
+							<span className="text-xs text-gray-400 ml-2">
+								{msg.created_at
+									? new Date(msg.created_at).toLocaleTimeString([], {
+											hour: '2-digit',
+											minute: '2-digit'
+										})
+									: ''}
+							</span>
+						</p>
+						{msg.username === username && (
+							<button
+								disabled={deletingId === msg.id}
+								onClick={async () => {
+									setDeletingId(msg.id);
+									await supabase.from('messages').delete().eq('id', msg.id);
+									setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+									setDeletingId(null);
+								}}
+								className="ml-2 text-xs text-red-500 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+								{deletingId === msg.id ? 'Deleting...' : 'Delete'}
+							</button>
+						)}
+					</div>
 				))}
 			</div>
 			<input
