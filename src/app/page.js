@@ -10,8 +10,12 @@ export default function ChatRoom({ params }) {
 	const [username, setUsername] = useState('');
 	const [message, setMessage] = useState('');
 	const [messages, setMessages] = useState([]);
+	const [users, setUsers] = useState([]);
 	const [isSending, setIsSending] = useState(false);
 	const [deletingId, setDeletingId] = useState(null);
+	const [isTyping, setIsTyping] = useState(false);
+	const [othersTyping, setOthersTyping] = useState([]);
+	let typingTimeout = null;
 
 	// Load saved username from localStorage
 	useEffect(() => {
@@ -55,6 +59,41 @@ export default function ChatRoom({ params }) {
 		fetchRoom();
 	}, [room, router]);
 
+	// Fetch users in the room
+	useEffect(() => {
+		if (!roomId) return;
+
+		const fetchUsers = async () => {
+			let { data: usersData } = await supabase
+				.from('messages')
+				.select('username')
+				.eq('room_id', roomId);
+			const uniqueUsers = Array.from(new Set(usersData.map((u) => u.username)));
+			setUsers(uniqueUsers);
+		};
+
+		fetchUsers();
+
+		// Listen for new messages to update user list
+		const subscription = supabase
+			.channel(`room-${roomId}-userlist`)
+			.on(
+				'postgres_changes',
+				{
+					event: 'INSERT',
+					schema: 'public',
+					table: 'messages',
+					filter: `room_id=eq.${roomId}`
+				},
+				() => fetchUsers()
+			)
+			.subscribe();
+
+		return () => {
+			supabase.removeChannel(subscription);
+		};
+	}, [roomId]);
+
 	// Listen for new messages in the room
 	useEffect(() => {
 		if (!roomId) return;
@@ -80,6 +119,34 @@ export default function ChatRoom({ params }) {
 		};
 	}, [roomId]);
 
+	// Listen for typing events
+	useEffect(() => {
+		if (!roomId) return;
+
+		const channel = supabase.channel(`typing-${roomId}`);
+		channel
+			.on('broadcast', { event: 'typing' }, (payload) => {
+				if (payload.payload.username !== username) {
+					setOthersTyping((prev) => {
+						if (!prev.includes(payload.payload.username)) {
+							return [...prev, payload.payload.username];
+						}
+						return prev;
+					});
+					setTimeout(() => {
+						setOthersTyping((prev) =>
+							prev.filter((u) => u !== payload.payload.username)
+						);
+					}, 2000);
+				}
+			})
+			.subscribe();
+
+		return () => {
+			supabase.removeChannel(channel);
+		};
+	}, [roomId, username]);
+
 	// Send a message
 	const sendMessage = async () => {
 		if (!message.trim() || !roomId || isSending) return;
@@ -97,9 +164,29 @@ export default function ChatRoom({ params }) {
 		if (e.key === 'Enter') sendMessage();
 	};
 
+	// Broadcast typing event
+	const handleTyping = (e) => {
+		setMessage(e.target.value);
+		if (!isTyping) {
+			setIsTyping(true);
+			supabase.channel(`typing-${roomId}`).send({
+				type: 'broadcast',
+				event: 'typing',
+				payload: { username }
+			});
+			if (typingTimeout) clearTimeout(typingTimeout);
+			typingTimeout = setTimeout(() => setIsTyping(false), 2000);
+		}
+	};
+
 	return (
 		<div className="min-h-screen flex flex-col items-center justify-center p-6">
 			<h2 className="text-xl font-bold mb-2">Room: {room}</h2>
+			{users.length > 0 && (
+				<div className="mb-2 w-full max-w-lg text-xs text-gray-600 flex flex-wrap gap-2">
+					<strong>Users:</strong> {users.join(', ')}
+				</div>
+			)}
 			<div className="h-64 overflow-y-auto border p-2 mb-2 w-full max-w-lg">
 				{messages.map((msg, index) => (
 					<div key={index} className="flex items-center text-sm group">
@@ -142,9 +229,15 @@ export default function ChatRoom({ params }) {
 				placeholder="Type a message..."
 				className="border p-2 rounded w-full"
 				value={message}
-				onChange={(e) => setMessage(e.target.value)}
+				onChange={handleTyping}
 				onKeyDown={handleKeyPress} // Enter key sends message
 			/>
+			{othersTyping.length > 0 && (
+				<div className="text-xs text-gray-500 mb-2 w-full max-w-lg">
+					{othersTyping.join(', ')} {othersTyping.length === 1 ? 'is' : 'are'}{' '}
+					typing...
+				</div>
+			)}
 			<button
 				onClick={sendMessage}
 				disabled={isSending}
